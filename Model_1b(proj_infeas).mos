@@ -1,0 +1,304 @@
+model "Dissertation_MscSPA_infeas_1c"
+  uses "mmxprs","mmquad","mmsystem"
+
+  parameters
+    ! Input data
+    ! InputDataFile = "MSc_1(89_115_46).xlsx"
+    InputDataFile = "MSc_2(56_99_59).xlsx"
+    ! InputDataFile = "MSc_3(90_124_43).xlsx"
+    ! InputDataFile = "MSc_4(54_92_44).xlsx"
+  end-parameters
+
+  forward procedure printSolution
+
+  declarations
+    ! The ID number of all students
+    Student_ID : set of string
+    ! The ID code of all projects
+    Project_ID : set of string
+    ! The ID number of all supervisors
+    Supervisor_ID : set of string
+    !Degree_ID : set of string
+    ! The max number of preferred projects for each student
+    MaximumPreferences = 10
+    ! The max number of suitable degree programmes for each project
+    MaximumP_Degree = 6
+  end-declarations
+
+  initializations from "mmsheet.xlsx:" + InputDataFile
+   ! Read in the ID number of five students from Column A of sheet 1
+   Student_ID as "[Sheet1$A2:A91]"
+   ! Read in the ID code of seven students from Column A of sheet 3
+   Project_ID as "[Sheet3$A2:A156]"
+   ! Read in the ID number of three students from Column A of sheet 4
+   Supervisor_ID as "[Sheet4$A2:A62]"
+  end-initializations
+
+  declarations
+    !! Students
+    ! The degree programme of student s
+    S_Degree: array(Student_ID) of string
+    ! The preferred projects of student s
+    Preference: array(Student_ID, 1..MaximumPreferences) of string
+    ! The preference score for student s of project p
+    Score: array(Student_ID, Project_ID) of integer
+
+    !! Projects
+    ! The maximum number of students that can be assigned to project p
+    p_capacity: array(Project_ID) of integer
+    ! The corresponding supervisor of project p
+    p_supervisor: array(Project_ID) of string
+    ! The matching degree programme of project p
+    p_Degree: array(Project_ID, 1..MaximumP_Degree) of string
+
+    !! Supervisors
+    ! the upperbound of the number of students that a supervisor t can handle
+    Supv_U: array(Supervisor_ID) of integer
+    ! the lowerbound of the number of students that a supervisor t can handle
+    Supv_L: array(Supervisor_ID) of integer
+
+    ! Binary variable for whether project p is assigned to student s
+    x: array(Student_ID, Project_ID) of mpvar
+    ! Dummy variable for whether a student is assigned to a dummy project
+    z: array(Student_ID) of mpvar
+    ! Binary variable for whether student s is preallocated to project p
+    y: array(Student_ID, Project_ID) of mpvar
+    ! Increased capcity of the number of students of projects
+    c: array(Project_ID) of mpvar
+    !Temp set for the preference of each student
+    P_s: set of string
+    !Temp set for the students who are preallocated
+    s_tempSet: set of string
+    ! Objective function 2
+    objective:mpvar
+  end-declarations
+
+  initializations from "mmsheet.xlsx:" + InputDataFile
+  !!!From Sheet1
+   ! Read in compatible degree programme(Column B) of each student(Column A)
+   S_Degree as "[Sheet1$A2:B91]"
+  !!!From Sheet2
+   ! Corresponding score points(Column C:8 9 10 11 12) for each preferred project(Column B) of each student(Column A)
+   Score as "[Sheet2$A2:C640]"
+   ! Read in preferred projects(Column H to N) of each student(Column G)
+   Preference as "partndx;[Sheet2$G2:Q91](1,2,3,4,5,6,7,8,9,10,11)"
+  !!!From Sheet3
+   ! Read in the supervisor(Column B) of each project(Column A)
+   p_supervisor as "[Sheet3$A2:B156]"
+   ! Read in the max numeber of students(Column C) can be assigned to each project(Column A)
+   p_capacity as "[Sheet3$A2:C156](1,3)"
+   ! Read in compatible degree programmes(Column D to H) of each project(Column A)
+   p_Degree as "partndx;[Sheet3$A2:I156](1,4,5,6,7,8,9)"
+   !!Sheet4
+   ! Read in the upper bound(Column B) of the number of students that supervisor(Column A) can handle
+   Supv_L as "[Sheet4$A2:B62]"
+   ! Read in the lower bound(Column C) of the number of students that supervisor(Column A) can handle
+   Supv_U as "[Sheet4$A2:C62](1,3)"
+  end-initializations
+
+  writeln("Begin running model")
+  start_time := gettime
+  ! --------------------------------------------------------------------------------------------
+  ! Constraints
+  ! --------------------------------------------------------------------------------------------
+  ! Assignment variable need to be binary
+  forall(p in Project_ID, s in Student_ID) x(s,p) is_binary
+  !preallocated variable
+  forall(p in Project_ID, s in Student_ID) y(s,p) is_binary
+  ! Dummy assignment variable need to be zero
+  forall(s in Student_ID)z(s) = 0
+  ! The increase of the capacity needs to be an integer
+  forall(p in Project_ID) c(p) >= 0
+  forall(p in Project_ID) c(p) is_integer
+
+  ! 1. if a student s is pre-allocated, then we let preallocated variable y(s,p) to be 1
+  !    and common allocating variable x(s,p) to be 0, we also set a tempset to store students
+  !    who are pre-allocated. Otherwise we set preallocated variable y(s,p) to be 0
+  number:=0
+  forall(s in Student_ID) do
+    if (Preference(s,2) = '') and (Score(s,Preference(s,1)) = 1) then
+      forall(p in Project_ID) x(s,p) = 0
+      forall(p = Preference(s,1)) y(s,p) = 1
+      s_tempSet+={s}
+      number+=1
+    else
+      forall(p in Project_ID) y(s,p) = 0
+    end-if
+  end-do
+  writeln("The number of pre-allocated students is ", number)
+
+  ! 2. Check the compatibility
+  ! The project p assigned to student s must matching the degree of student s
+  ! 2.1) if all of the preference of student s cannot match the degree programme of student t,
+  !      then we stop the assignment process and ask student to resubmit his/her preference
+  forall(s in Student_ID) do
+    P_s:={}
+    forall(j in 1..MaximumPreferences) P_s+={Preference(s,j)}
+    ! We initialize "match" := false for all students
+    match := false
+    ! if there are at least one preference that match the student s's degree programme,
+    ! we set "match" := true. In other words, "match" := false only occurs in the situation
+    ! that all the preference of student s are not compatible with student s
+    forall(i in 1..MaximumP_Degree, p in Project_ID|p in P_s) do
+        if (S_Degree(s) = p_Degree(p,i)) then
+          match := true
+        end-if
+    end-do
+    ! if "match" := false, the student s is preallocated and his/her preallocated project
+    ! is not compatible with his/her degree
+    ! Stop the procedure to check the problem with the preallocated student s
+    if (Preference(s,2) = '') and (Score(s,Preference(s,1)) = 1) and (match = false)then
+      writeln("The preallocated student ",s," submit the project that doesn't match his degree")
+    end-if
+    ! if "match" := false, there is some wrong with the data set or the student's preference
+    ! We stop the procedure and fix the problem
+    forall(p in Project_ID|p in P_s) do
+      if (match = false) then
+         writeln("The project ",p," chosen by ",s, ' is not matching his degree')
+         exit(1)
+      end-if
+    end-do
+  end-do
+
+  ! 2.2) if the suitable degree programme of project p do not contain the degree programme of
+  !      student s, then p cannot be assigned to student s. (x(s,p) = 0)
+  forall(p in Project_ID, s in Student_ID) do
+    flag := false
+    forall(i in 1..MaximumP_Degree) do
+      if (S_Degree(s) = p_Degree(p,i)) then
+        flag := true
+      end-if
+    end-do
+    if (flag = false) then
+       x(s,p) = 0
+    end-if
+  end-do
+
+  ! 3. For each projects, the maximum number of students that can be assignned to project p
+  !    can no more than the capacity p
+  forall(p in Project_ID) sum(s in Student_ID) (x(s,p) + y(s,p)) <= p_capacity(p) + c(p)
+
+  ! 4. For each students, there must be exactly one project that can assigned to s
+  forall(s in Student_ID) sum(p in Project_ID)(x(s,p) + z(s) + y(s,p)) = 1
+
+  ! 5. Each student should not be assigned to project p which is not in his preference list
+  forall(p in Project_ID, s in Student_ID) x(s,p) <= Score(s,p)
+
+  ! 6. The number of the students assigned to each supervisor should not exceed upper bound
+  !    of supervisor's workload and not be lower than lower bound of supervisor's workload
+  forall(t in Supervisor_ID) do
+    sum(s in Student_ID, p in Project_ID|p_supervisor(p)=t)(x(s,p)+y(s,p))<=Supv_U(t)
+    sum(s in Student_ID, p in Project_ID|p_supervisor(p)=t)(x(s,p)+y(s,p))>=Supv_L(t)
+  end-do
+
+  ! ===================================================================================================
+  ! Objective function
+  ! --------------------------------------------------------------------------------------------
+  ! Objective function 1: Maximize the sum of scores of all students
+  ! objective:= sum(p in Project_ID, s in Student_ID)( x(s,p)*Score(s,p) )
+
+  ! Objective function 2: Maximize the minimum score of students
+  forall(s in Student_ID-s_tempSet) objective <= sum(p in Project_ID) Score(s,p)*x(s,p)
+  ! ===================================================================================================
+
+  ! Maximise the objective function:
+  maximise(objective)
+
+  end_time := gettime
+  writeln
+  writeln("Time: ", end_time-start_time, " seconds")
+
+  ! ===================================================================================================
+  ! Check the feasiblity
+  ! ===================================================================================================
+  if getprobstat = XPRS_OPT then
+    writeln("Problem solved to optimality.")
+    writeln("The optimal value of the objective function is ", getobjval,".")
+    writeln
+  elif getprobstat = XPRS_INF then
+    writeln("Problem is infeasible.")
+  end-if
+
+  ! ***************************************************************************
+  ! Print the results
+  ! ***************************************************************************
+  printSolution
+
+  procedure printSolution
+    declarations
+      Y1,Y2,Y3,Y4,Y5: set of string
+      !Count variable
+      X1,X2,X3,X4,X5: array(Student_ID) of integer
+    end-declarations
+
+    ! total score
+    writeln("The sum of total score is :")
+    writeln("  ",sum(p in Project_ID, s in Student_ID) getsol(x(s,p))*Score(s,p) )
+    ! minimum score of students
+    writeln("The minimum score is :")
+    writeln("  ",min(s in Student_ID-s_tempSet)(sum(p in Project_ID)Score(s,p)*getsol(x(s,p))) )
+
+    writeln('1) SPA-P Assignment: ')
+    forall(p in Project_ID, s in Student_ID| getsol(x(s,p)) > 0.001) do
+      !writeln(s,'->',p,'->', p_supervisor(p))
+      Y1:={}
+      Y1+={Preference(s,1)}
+      Y2:={}
+      Y2:=Y1+{Preference(s,2)}
+      Y3:={}
+      Y3:={Preference(s,3)}
+      Y4:={}
+      Y4:={Preference(s,4)}
+      Y5:={}
+      Y5:={Preference(s,5)}
+      if (p in Y1) then
+        X1(s):=1
+      end-if
+      if (p in Y2) then
+        X2(s):=1
+      end-if
+      if (p in Y3) then
+        X3(s):=1
+      end-if
+      if (p in Y4) then
+        X4(s):=1
+      end-if
+      if (p in Y5) then
+        X5(s):=1
+      end-if
+    end-do
+    total:=sum(s in Student_ID, p in Project_ID)getsol(x(s,p))
+    writeln('Number of the SPA-P assignment: ', total)
+    writeln('The percentage of students who are assigned to their First preference is: ')
+    writeln("  ",(  sum(s in Student_ID)X1(s))/total  )
+    writeln('The percentage of students who are assigned to their Top 2 preferences is: ')
+    writeln("  ",(  sum(s in Student_ID)X2(s))/total  )
+    writeln('The percentage of students who are assigned to their Top 3 preferences is: ')
+    writeln("  ",(  sum(s in Student_ID)(X2(s)+X3(s)) )/total)
+    writeln('The percentage of students who are assigned to their Top 4 preferences is: ')
+    writeln("  ",(  sum(s in Student_ID)(X2(s)+X3(s)+X4(s)) )/total)
+    writeln('The percentage of students who are assigned to their Top 5 preferences is: ')
+    writeln("  ",(  sum(s in Student_ID)(X2(s)+X3(s)+X4(s)+X5(s)))/total)
+
+    writeln('2) Dummy assignment:')
+    writeln('Number of the dummy assignment: ', sum(s in Student_ID)getsol(z(s)))
+    forall(s in Student_ID | getsol(z(s)) > 0.001) do
+      writeln(s)
+    end-do
+
+    writeln('3) Pre assignment:')
+    writeln('Number of the Pre assignment: ', sum(s in Student_ID, p in Project_ID)getsol(y(s,p)))
+    forall(s in Student_ID, p in Project_ID | getsol(y(s,p)) > 0.001) do
+      writeln('preallocated: ',s,'-',p)
+    end-do
+
+    writeln('4) Infeasible variable:')
+    forall(p in Project_ID| getsol(c(p)) > 0.001) writeln( 'c(p): ',p,'--',getsol(c(p)) )
+    writeln("The number of changes is : ", sum(p in Project_ID| getsol(c(p)) > 0.001)getsol(c(p)))
+
+  end-procedure
+  writeln("End running model")
+
+setparam("XPRS_MaxTime", 60)
+
+end-model
