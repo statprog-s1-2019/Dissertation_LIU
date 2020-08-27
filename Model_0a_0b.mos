@@ -1,4 +1,4 @@
-model "Dissertation_MscSPA"
+model "Dissertation_MscSPA_0a_0b"
   uses "mmxprs","mmquad","mmsystem","mmjobs"
 
   parameters
@@ -212,10 +212,10 @@ model "Dissertation_MscSPA"
   ! =======================================================================================
   ! Objective function
   ! ---------------------------------------------------------------------------------------
-  ! Objective function 1: Maximize the sum of scores of all students
+  ! Objective function 1(Model 0a): Maximize the sum of scores of all students
   objective:= sum(p in Project_ID, s in Student_ID)( x(s,p)*Score(s,p) )
 
-  ! Objective function 2: Maximize the minimum score of students
+  ! Objective function 2(Model 0b): Maximize the minimum score of students
   ! forall(s in Student_ID-s_tempSet) objective <= sum(p in Project_ID) Score(s,p)*x(s,p)
   ! =======================================================================================
 

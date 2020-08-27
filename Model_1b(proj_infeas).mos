@@ -1,4 +1,4 @@
-model "Dissertation_MscSPA_infeas_1c"
+model "Dissertation_MscSPA_infeas_1b"
   uses "mmxprs","mmquad","mmsystem"
 
   parameters
